@@ -1,5 +1,4 @@
 # Large data files — stored on Google Drive instead
-combined_enrollment.csv
 cms_ma_enrollment_data/
 *.zip
 
