@@ -36,34 +36,7 @@ def load_data(path: str) -> pd.DataFrame:
     df["Enrolled"] = pd.to_numeric(df["Enrolled"], errors="coerce").fillna(0)
     return df
 
-GITHUB_USER = "nrunyard"
-GITHUB_REPO = "MA-Monthly-Enrollment-Data"
-GITHUB_BRANCH = "main"
-GITHUB_CSV = "combined_enrollment.csv"
-GITHUB_RAW_URL = f"https://media.githubusercontent.com/media/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{GITHUB_CSV}"
-
 DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
-
-@st.cache_data(show_spinner="Downloading enrollment data...")
-def fetch_from_github() -> Path:
-    import requests
-    out = Path(__file__).parent / "combined_enrollment.csv"
-    if out.exists():
-        return out
-    resp = requests.get(GITHUB_RAW_URL, stream=True, timeout=120)
-    resp.raise_for_status()
-    with open(out, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-    return out
-
-if not DEFAULT_CSV.exists():
-    try:
-        DEFAULT_CSV = fetch_from_github()
-    except Exception as e:
-        st.error(f"Could not download data file: {e}")
-        st.stop()
 
 df_full = load_data(str(DEFAULT_CSV))
 all_periods = sorted(df_full["report_period"].unique())
