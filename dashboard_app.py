@@ -134,11 +134,15 @@ county_options = sorted(
 sel_county = st.sidebar.multiselect("County", county_options)
 
 st.sidebar.markdown("---")
-period_range = st.sidebar.select_slider(
-    "Period Range",
-    options=all_periods,
-    value=(all_periods[0], all_periods[-1]),
-)
+if len(all_periods) > 1:
+    period_range = st.sidebar.select_slider(
+        "Period Range",
+        options=all_periods,
+        value=(all_periods[0], all_periods[-1]),
+    )
+else:
+    period_range = (all_periods[0], all_periods[0]) if all_periods else (None, None)
+    st.sidebar.caption(f"Period: {period_range[0]}")
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
