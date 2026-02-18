@@ -142,7 +142,45 @@ def step_download():
         raise RuntimeError(f"Failed to download period {period}")
 
 
+ROLLING_MONTHS = 24
+
+
+def prune_old_periods():
+    """Delete downloaded data older than ROLLING_MONTHS to stay under 2GB."""
+    from datetime import date
+    import shutil
+
+    if not DATA_DIR.exists():
+        return
+
+    # Get all YYYY-MM period folders
+    all_periods = sorted([
+        d.name for d in DATA_DIR.iterdir()
+        if d.is_dir() and re.match(r"^\d{4}-\d{2}$", d.name)
+    ])
+
+    cutoff_idx = len(all_periods) - ROLLING_MONTHS
+    if cutoff_idx <= 0:
+        log.info("Only %d periods found, nothing to prune.", len(all_periods))
+        return
+
+    to_delete = all_periods[:cutoff_idx]
+    for period in to_delete:
+        period_dir = DATA_DIR / period
+        shutil.rmtree(period_dir)
+        log.info("Pruned old period: %s", period)
+
+    # Update manifest
+    manifest = load_manifest()
+    manifest -= set(to_delete)
+    save_manifest(manifest)
+    log.info("Pruned %d periods, keeping latest %d.", len(to_delete), ROLLING_MONTHS)
+
+
 def step_combine():
+    log.info("Pruning to rolling %d months...", ROLLING_MONTHS)
+    prune_old_periods()
+
     log.info("Combining all CSVs...")
     all_dfs = []
     csv_files = sorted(DATA_DIR.rglob("*.csv"))
@@ -170,7 +208,8 @@ def step_combine():
 
     combined = pd.concat(all_dfs, ignore_index=True)
     combined.to_csv(COMBINED_CSV, index=False)
-    log.info("Combined CSV saved: %s (%d rows)", COMBINED_CSV, len(combined))
+    log.info("Combined CSV saved: %s (%d rows, %d periods)",
+             COMBINED_CSV, len(combined), combined["report_period"].nunique())
 
 
 def step_upload():
