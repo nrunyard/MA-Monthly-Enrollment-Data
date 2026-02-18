@@ -232,19 +232,10 @@ def step_upload():
             new_file = service.files().create(body=file_metadata, media_body=media2, fields="id").execute()
             new_id = new_file.get("id")
             log.info("Created new Google Drive file. New ID: %s", new_id)
-            log.warning(
-                "
-
-*** ACTION REQUIRED ***
-"
-                "A new file was created on Google Drive with ID: %s
-"
-                "Update your GDRIVE_FILE_ID secret and dashboard_app.py with this new ID.
-"
-                "Then share the new file publicly so the dashboard can read it.
-",
-                new_id
-            )
+            msg = "ACTION REQUIRED: New Drive file created. ID: " + new_id
+            msg += " -- Update GDRIVE_FILE_ID secret and dashboard_app.py with this ID."
+            msg += " Then share the new file publicly so the dashboard can read it."
+            log.warning(msg)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
