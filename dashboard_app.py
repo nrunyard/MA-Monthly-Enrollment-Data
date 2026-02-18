@@ -46,7 +46,7 @@ def is_lfs_pointer(path: Path) -> bool:
     except Exception:
         return False
 
-if not DEFAULT_CSV.exists() or is_lfs_pointer(DEFAULT_CSV):
+if not DEFAULT_CSV.exists() or DEFAULT_CSV.stat().st_size < 1000 or is_lfs_pointer(DEFAULT_CSV):
     import requests
     token = st.secrets.get("GITHUB_TOKEN", "")
     headers = {"Authorization": f"token {token}"} if token else {}
@@ -71,11 +71,18 @@ if not DEFAULT_CSV.exists() or is_lfs_pointer(DEFAULT_CSV):
             lfs_batch_url = (
                 "https://github.com/nrunyard/MA-Monthly-Enrollment-Data.git/info/lfs/objects/batch"
             )
-            # Read the pointer file to get oid and size
-            with open(DEFAULT_CSV, "r") as pf:
-                pointer_text = pf.read()
-            oid = next((l.split(":")[1] for l in pointer_text.splitlines() if l.startswith("oid sha256:")), None)
-            size = next((int(l.split(" ")[1]) for l in pointer_text.splitlines() if l.startswith("size ")), None)
+            # Read the pointer file to get oid and size (if it exists)
+            oid, size = None, None
+            if DEFAULT_CSV.exists():
+                with open(DEFAULT_CSV, "r") as pf:
+                    pointer_text = pf.read()
+                oid = next((l.split(":")[1].strip() for l in pointer_text.splitlines() if l.startswith("oid sha256:")), None)
+                size = next((int(l.split(" ")[1]) for l in pointer_text.splitlines() if l.startswith("size ")), None)
+
+            # If no pointer, fall back to known values from repo
+            if not oid:
+                oid = "6005d37d03c852614f7f9f259238fc7e423798ee5445229ba3adccb68b527077"
+                size = 1379188508
 
             if oid and size:
                 batch_resp = requests.post(
