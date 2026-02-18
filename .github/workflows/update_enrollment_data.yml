@@ -28,7 +28,7 @@ jobs:
       - name: Download latest CMS enrollment file
         run: python update_data.py --step download
 
-      - name: Combine CSVs
+      - name: Combine new data with existing CSV
         run: python update_data.py --step combine
 
       - name: Commit and push updated data

@@ -187,7 +187,11 @@ def step_combine():
     csv_files = [f for f in csv_files if "combined" not in f.name.lower()]
 
     if not csv_files:
-        raise RuntimeError(f"No CSV files found under {DATA_DIR}")
+        # No raw files downloaded — load from existing combined CSV if available
+        if COMBINED_CSV.exists():
+            log.info("No raw CSVs found, but combined CSV exists — nothing new to combine.")
+            return
+        raise RuntimeError(f"No CSV files found under {DATA_DIR} and no existing combined CSV.")
 
     for csv_path in csv_files:
         # Period is the YYYY-MM folder directly under DATA_DIR
@@ -206,7 +210,28 @@ def step_combine():
         except Exception as e:
             log.warning("Could not read %s: %s", csv_path, e)
 
-    combined = pd.concat(all_dfs, ignore_index=True)
+    new_data = pd.concat(all_dfs, ignore_index=True)
+
+    # Merge with existing combined CSV if it exists
+    if COMBINED_CSV.exists():
+        log.info("Merging with existing combined CSV...")
+        existing = pd.read_csv(COMBINED_CSV, dtype=str)
+        existing["Enrolled"] = pd.to_numeric(existing["Enrolled"], errors="coerce")
+        # Remove any periods we're replacing with fresh data
+        new_periods = new_data["report_period"].unique()
+        existing = existing[~existing["report_period"].isin(new_periods)]
+        combined = pd.concat([existing, new_data], ignore_index=True)
+    else:
+        combined = new_data
+
+    # Keep only the most recent ROLLING_MONTHS periods
+    all_periods = sorted(combined["report_period"].unique())
+    if len(all_periods) > ROLLING_MONTHS:
+        keep_periods = all_periods[-ROLLING_MONTHS:]
+        combined = combined[combined["report_period"].isin(keep_periods)]
+        log.info("Trimmed to %d periods (%s to %s)", ROLLING_MONTHS, keep_periods[0], keep_periods[-1])
+
+    combined = combined.sort_values("report_period")
     combined.to_csv(COMBINED_CSV, index=False)
     log.info("Combined CSV saved: %s (%d rows, %d periods)",
              COMBINED_CSV, len(combined), combined["report_period"].nunique())
