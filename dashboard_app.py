@@ -38,9 +38,8 @@ def load_data(path: str) -> pd.DataFrame:
 
 DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
 
-# On Streamlit Cloud, LFS files are pointer files not real data.
-# Detect this and download the real file via GitHub LFS API instead.
 def is_lfs_pointer(path: Path) -> bool:
+    """Check if a file is a Git LFS pointer rather than real data."""
     try:
         with open(path, "rb") as f:
             return f.read(7) == b"version"
@@ -49,18 +48,55 @@ def is_lfs_pointer(path: Path) -> bool:
 
 if not DEFAULT_CSV.exists() or is_lfs_pointer(DEFAULT_CSV):
     import requests
-    LFS_URL = (
-        "https://media.githubusercontent.com/media/"
-        "nrunyard/MA-Monthly-Enrollment-Data/main/combined_enrollment.csv"
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    headers = {"Authorization": f"token {token}"} if token else {}
+    # Use GitHub API to get the LFS download URL
+    API_URL = (
+        "https://api.github.com/repos/nrunyard/MA-Monthly-Enrollment-Data"
+        "/contents/combined_enrollment.csv"
     )
-    with st.spinner("Downloading enrollment data..."):
+    with st.spinner("Downloading enrollment data (this may take a minute)..."):
         try:
-            resp = requests.get(LFS_URL, stream=True, timeout=300)
-            resp.raise_for_status()
-            with open(DEFAULT_CSV, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+            # First get the LFS pointer metadata
+            meta = requests.get(API_URL, headers={**headers, "Accept": "application/vnd.github.v3+json"}, timeout=30)
+            meta.raise_for_status()
+
+            # Use git-lfs batch API to get the real download URL
+            sha = meta.json().get("sha", "")
+            lfs_headers = {
+                **headers,
+                "Accept": "application/vnd.git-lfs+json",
+                "Content-Type": "application/vnd.git-lfs+json",
+            }
+            lfs_batch_url = (
+                "https://github.com/nrunyard/MA-Monthly-Enrollment-Data.git/info/lfs/objects/batch"
+            )
+            # Read the pointer file to get oid and size
+            with open(DEFAULT_CSV, "r") as pf:
+                pointer_text = pf.read()
+            oid = next((l.split(":")[1] for l in pointer_text.splitlines() if l.startswith("oid sha256:")), None)
+            size = next((int(l.split(" ")[1]) for l in pointer_text.splitlines() if l.startswith("size ")), None)
+
+            if oid and size:
+                batch_resp = requests.post(
+                    lfs_batch_url,
+                    json={"operation": "download", "objects": [{"oid": oid, "size": size}]},
+                    headers=lfs_headers,
+                    timeout=30,
+                )
+                batch_resp.raise_for_status()
+                download_url = batch_resp.json()["objects"][0]["actions"]["download"]["href"]
+                dl_headers = batch_resp.json()["objects"][0]["actions"]["download"].get("header", {})
+
+                resp = requests.get(download_url, headers=dl_headers, stream=True, timeout=600)
+                resp.raise_for_status()
+                with open(DEFAULT_CSV, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            else:
+                st.error("Could not parse LFS pointer file.")
+                st.stop()
         except Exception as e:
             st.error(f"Could not download data: {e}")
             st.stop()
