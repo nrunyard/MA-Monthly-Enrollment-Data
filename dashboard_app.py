@@ -38,6 +38,33 @@ def load_data(path: str) -> pd.DataFrame:
 
 DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
 
+# On Streamlit Cloud, LFS files are pointer files not real data.
+# Detect this and download the real file via GitHub LFS API instead.
+def is_lfs_pointer(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(7) == b"version"
+    except Exception:
+        return False
+
+if not DEFAULT_CSV.exists() or is_lfs_pointer(DEFAULT_CSV):
+    import requests
+    LFS_URL = (
+        "https://media.githubusercontent.com/media/"
+        "nrunyard/MA-Monthly-Enrollment-Data/main/combined_enrollment.csv"
+    )
+    with st.spinner("Downloading enrollment data..."):
+        try:
+            resp = requests.get(LFS_URL, stream=True, timeout=300)
+            resp.raise_for_status()
+            with open(DEFAULT_CSV, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        except Exception as e:
+            st.error(f"Could not download data: {e}")
+            st.stop()
+
 df_full = load_data(str(DEFAULT_CSV))
 all_periods = sorted(df_full["report_period"].unique())
 
