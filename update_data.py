@@ -209,8 +209,42 @@ def step_upload():
     service = build("drive", "v3", credentials=creds)
 
     media = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
-    service.files().update(fileId=file_id, media_body=media).execute()
-    log.info("Uploaded %s to Google Drive file ID: %s", COMBINED_CSV, file_id)
+
+    # Try updating the existing file first
+    try:
+        service.files().update(fileId=file_id, media_body=media).execute()
+        log.info("Updated existing Google Drive file: %s", file_id)
+    except Exception as e:
+        log.warning("Could not update existing file (%s), uploading as new file...", e)
+        # Fall back: search for existing file by name and update it, or create new
+        query = f"name = '{COMBINED_CSV.name}' and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        existing = results.get("files", [])
+        if existing:
+            existing_id = existing[0]["id"]
+            media2 = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
+            service.files().update(fileId=existing_id, media_body=media2).execute()
+            log.info("Updated file by name search, ID: %s", existing_id)
+        else:
+            # Create brand new file
+            file_metadata = {"name": COMBINED_CSV.name, "mimeType": "text/csv"}
+            media2 = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
+            new_file = service.files().create(body=file_metadata, media_body=media2, fields="id").execute()
+            new_id = new_file.get("id")
+            log.info("Created new Google Drive file. New ID: %s", new_id)
+            log.warning(
+                "
+
+*** ACTION REQUIRED ***
+"
+                "A new file was created on Google Drive with ID: %s
+"
+                "Update your GDRIVE_FILE_ID secret and dashboard_app.py with this new ID.
+"
+                "Then share the new file publicly so the dashboard can read it.
+",
+                new_id
+            )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
