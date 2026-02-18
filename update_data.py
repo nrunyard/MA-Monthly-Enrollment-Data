@@ -174,68 +174,8 @@ def step_combine():
 
 
 def step_upload():
-    """Upload combined_enrollment.csv to Google Drive using a service account."""
-    credentials_json = os.environ.get("GDRIVE_CREDENTIALS")
-    file_id = os.environ.get("GDRIVE_FILE_ID")
-
-    if not credentials_json:
-        raise RuntimeError("GDRIVE_CREDENTIALS secret not set.")
-    if not file_id:
-        raise RuntimeError("GDRIVE_FILE_ID secret not set.")
-
-    # Write credentials to a temp file
-    creds_path = Path("/tmp/gdrive_creds.json")
-    creds_path.write_text(credentials_json)
-
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaFileUpload
-    except ImportError:
-        log.info("Installing google-api-python-client...")
-        import subprocess
-        subprocess.run(
-            ["pip", "install", "google-api-python-client", "google-auth"],
-            check=True
-        )
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaFileUpload
-
-    scopes = ["https://www.googleapis.com/auth/drive.file"]
-    creds = service_account.Credentials.from_service_account_file(
-        str(creds_path), scopes=scopes
-    )
-    service = build("drive", "v3", credentials=creds)
-
-    media = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
-
-    # Try updating the existing file first
-    try:
-        service.files().update(fileId=file_id, media_body=media).execute()
-        log.info("Updated existing Google Drive file: %s", file_id)
-    except Exception as e:
-        log.warning("Could not update existing file (%s), uploading as new file...", e)
-        # Fall back: search for existing file by name and update it, or create new
-        query = f"name = '{COMBINED_CSV.name}' and trashed = false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        existing = results.get("files", [])
-        if existing:
-            existing_id = existing[0]["id"]
-            media2 = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
-            service.files().update(fileId=existing_id, media_body=media2).execute()
-            log.info("Updated file by name search, ID: %s", existing_id)
-        else:
-            # Create brand new file
-            file_metadata = {"name": COMBINED_CSV.name, "mimeType": "text/csv"}
-            media2 = MediaFileUpload(str(COMBINED_CSV), mimetype="text/csv", resumable=True)
-            new_file = service.files().create(body=file_metadata, media_body=media2, fields="id").execute()
-            new_id = new_file.get("id")
-            log.info("Created new Google Drive file. New ID: %s", new_id)
-            msg = "ACTION REQUIRED: New Drive file created. ID: " + new_id
-            msg += " -- Update GDRIVE_FILE_ID secret and dashboard_app.py with this ID."
-            msg += " Then share the new file publicly so the dashboard can read it."
-            log.warning(msg)
+    """CSV is now committed directly to GitHub via Git LFS — no upload needed."""
+    log.info("CSV is stored in GitHub via Git LFS. No separate upload step required.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
