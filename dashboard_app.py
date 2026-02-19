@@ -38,34 +38,18 @@ def load_data(path: str) -> pd.DataFrame:
 
 DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
 
-# Download from Google Drive on startup if not cached
-GDRIVE_FILE_ID = "1CWd-WEGVmK3J7NMZGBLu2BE77mB8uoHi"  # compressed .gz file
-
-def download_from_gdrive(file_id: str, dest_gz: Path) -> Path:
-    import requests
-    session = requests.Session()
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    resp = session.get(url, stream=True, timeout=300)
-    resp.raise_for_status()
-    with open(dest_gz, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-    return dest_gz
-
-GZ_CSV = DEFAULT_CSV.parent / "combined_enrollment.csv.gz"
+# Load from compressed CSV stored directly in the repo
+GZ_CSV = Path(__file__).parent / "combined_enrollment.csv.gz"
 
 if not DEFAULT_CSV.exists() or DEFAULT_CSV.stat().st_size < 1_000_000:
-    with st.spinner("Downloading enrollment data (first load only, ~30 sec)..."):
+    with st.spinner("Decompressing enrollment data..."):
         try:
             import gzip, shutil
-            download_from_gdrive(GDRIVE_FILE_ID, GZ_CSV)
             with gzip.open(GZ_CSV, "rb") as f_in:
                 with open(DEFAULT_CSV, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
-            GZ_CSV.unlink()
         except Exception as e:
-            st.error(f"Could not download data: {e}")
+            st.error(f"Could not load data: {e}")
             st.stop()
 
 df_full = load_data(str(DEFAULT_CSV))
