@@ -39,53 +39,31 @@ def load_data(path: str) -> pd.DataFrame:
 DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
 
 # Download from Google Drive on startup if not cached
-GDRIVE_FILE_ID = "1A5HQIrH6umAsUGrP4IkZvPdVR7N9uxuc"
+GDRIVE_FILE_ID = "1CWd-WEGVmK3J7NMZGBLu2BE77mB8uoHi"  # compressed .gz file
 
-def download_from_gdrive(file_id: str, dest: Path):
-    import requests, re
+def download_from_gdrive(file_id: str, dest_gz: Path) -> Path:
+    import requests
     session = requests.Session()
-    url = "https://drive.google.com/uc"
-
-    # Initial request
-    resp = session.get(url, params={"export": "download", "id": file_id}, stream=True, timeout=60)
-
-    # Handle virus scan warning page
-    if "text/html" in resp.headers.get("Content-Type", ""):
-        # Extract confirm token from HTML
-        match = re.search(r'confirm=([0-9A-Za-z_\-]+)', resp.text)
-        confirm = match.group(1) if match else "t"
-        resp = session.get(
-            url,
-            params={"export": "download", "id": file_id, "confirm": confirm},
-            stream=True, timeout=600
-        )
-
-    # Also check cookies for download_warning token
-    token = next((v for k, v in session.cookies.items() if "download_warning" in k), None)
-    if token:
-        resp = session.get(
-            url,
-            params={"export": "download", "id": file_id, "confirm": token},
-            stream=True, timeout=600
-        )
-
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    resp = session.get(url, stream=True, timeout=300)
     resp.raise_for_status()
-    with open(dest, "wb") as f:
+    with open(dest_gz, "wb") as f:
         for chunk in resp.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 f.write(chunk)
+    return dest_gz
 
-    # Verify it's actually a CSV and not an HTML error page
-    with open(dest, "rb") as f:
-        header = f.read(100)
-    if b"<!DOCTYPE" in header or b"<html" in header:
-        dest.unlink()
-        raise RuntimeError("Google Drive returned an HTML page instead of the CSV. Check sharing settings.")
+GZ_CSV = DEFAULT_CSV.parent / "combined_enrollment.csv.gz"
 
 if not DEFAULT_CSV.exists() or DEFAULT_CSV.stat().st_size < 1_000_000:
-    with st.spinner("Downloading enrollment data (first load only, ~1 min)..."):
+    with st.spinner("Downloading enrollment data (first load only, ~30 sec)..."):
         try:
-            download_from_gdrive(GDRIVE_FILE_ID, DEFAULT_CSV)
+            import gzip, shutil
+            download_from_gdrive(GDRIVE_FILE_ID, GZ_CSV)
+            with gzip.open(GZ_CSV, "rb") as f_in:
+                with open(DEFAULT_CSV, "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            GZ_CSV.unlink()
         except Exception as e:
             st.error(f"Could not download data: {e}")
             st.stop()
