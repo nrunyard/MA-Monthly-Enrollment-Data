@@ -41,22 +41,51 @@ DEFAULT_CSV = Path(__file__).parent / "combined_enrollment.csv"
 # Download from Google Drive on startup if not cached
 GDRIVE_FILE_ID = "1A5HQIrH6umAsUGrP4IkZvPdVR7N9uxuc"
 
+def download_from_gdrive(file_id: str, dest: Path):
+    import requests, re
+    session = requests.Session()
+    url = "https://drive.google.com/uc"
+
+    # Initial request
+    resp = session.get(url, params={"export": "download", "id": file_id}, stream=True, timeout=60)
+
+    # Handle virus scan warning page
+    if "text/html" in resp.headers.get("Content-Type", ""):
+        # Extract confirm token from HTML
+        match = re.search(r'confirm=([0-9A-Za-z_\-]+)', resp.text)
+        confirm = match.group(1) if match else "t"
+        resp = session.get(
+            url,
+            params={"export": "download", "id": file_id, "confirm": confirm},
+            stream=True, timeout=600
+        )
+
+    # Also check cookies for download_warning token
+    token = next((v for k, v in session.cookies.items() if "download_warning" in k), None)
+    if token:
+        resp = session.get(
+            url,
+            params={"export": "download", "id": file_id, "confirm": token},
+            stream=True, timeout=600
+        )
+
+    resp.raise_for_status()
+    with open(dest, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+
+    # Verify it's actually a CSV and not an HTML error page
+    with open(dest, "rb") as f:
+        header = f.read(100)
+    if b"<!DOCTYPE" in header or b"<html" in header:
+        dest.unlink()
+        raise RuntimeError("Google Drive returned an HTML page instead of the CSV. Check sharing settings.")
+
 if not DEFAULT_CSV.exists() or DEFAULT_CSV.stat().st_size < 1_000_000:
-    import requests
     with st.spinner("Downloading enrollment data (first load only, ~1 min)..."):
         try:
-            url = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
-            session = requests.Session()
-            resp = session.get(url, stream=True, timeout=30)
-            # Handle Google virus-scan confirmation for large files
-            token = next((v for k, v in resp.cookies.items() if "download_warning" in k), None)
-            if token:
-                resp = session.get(url, params={"confirm": token}, stream=True, timeout=600)
-            resp.raise_for_status()
-            with open(DEFAULT_CSV, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+            download_from_gdrive(GDRIVE_FILE_ID, DEFAULT_CSV)
         except Exception as e:
             st.error(f"Could not download data: {e}")
             st.stop()
