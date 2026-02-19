@@ -1,25 +1,22 @@
 """
-update_data.py
-==============
-Called by GitHub Actions to:
-  --step download  : Download the latest CMS monthly enrollment file
-  --step combine   : Rebuild combined_enrollment.csv from all downloaded files
-  --step upload    : Push combined_enrollment.csv to Google Drive
+update_data.py — GitHub Actions automation script
+==================================================
+Steps:
+  --step download  : Download latest CMS monthly file
+  --step combine   : Merge into combined_enrollment.csv.gz (rolling 24 months)
 
-Secrets required in GitHub (Settings → Secrets → Actions):
-  GDRIVE_CREDENTIALS  : Contents of your Google service account JSON key file
-  GDRIVE_FILE_ID      : The Google Drive file ID of your combined_enrollment.csv
-                        (the part between /d/ and /view in the share link)
+Usage:
+  python update_data.py --step download
+  python update_data.py --step combine
 """
 
 import argparse
-import json
+import gzip
 import logging
-import os
 import re
-import time
+import shutil
 import zipfile
-from datetime import date, datetime
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 
@@ -34,48 +31,39 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CMS_BASE = "https://www.cms.gov"
-SUBPAGE_PATTERN = (
+HEADERS      = {"User-Agent": "Mozilla/5.0 (compatible; CMS-Downloader/1.0)"}
+CMS_BASE     = "https://www.cms.gov"
+SUBPAGE_PAT  = (
     "/data-research/statistics-trends-and-reports/"
     "medicare-advantagepart-d-contract-and-enrollment-data/"
-    "monthly-ma-enrollment-state/county/contract/"
-    "ma-enrollment-scc-{period}"
+    "monthly-ma-enrollment-state/county/contract/ma-enrollment-scc-{period}"
 )
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CMS-AutoUpdater/1.0)"}
-DATA_DIR = Path("cms_ma_enrollment_data")
-COMBINED_CSV = Path("combined_enrollment.csv")
-MANIFEST = Path("downloaded_periods.txt")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def get_current_period() -> str:
-    today = date.today()
-    # CMS releases last month's data around the 15th
-    # We run on the 20th so previous month should be available
-    if today.month == 1:
-        return f"{today.year - 1}-12"
-    return f"{today.year}-{today.month - 1:02d}"
+DATA_DIR     = Path("cms_ma_enrollment_data")
+COMBINED_GZ  = Path("combined_enrollment.csv.gz")
+MANIFEST     = Path("downloaded_periods.txt")
+ROLLING      = 24
 
 
 def load_manifest() -> set:
-    if MANIFEST.exists():
-        return set(MANIFEST.read_text().splitlines())
-    return set()
-
+    return set(MANIFEST.read_text().splitlines()) if MANIFEST.exists() else set()
 
 def save_manifest(periods: set):
     MANIFEST.write_text("\n".join(sorted(periods)))
 
+def current_period() -> str:
+    t = date.today()
+    # Run on 20th — previous month should be published
+    m = t.month - 1 or 12
+    y = t.year if t.month > 1 else t.year - 1
+    return f"{y}-{m:02d}"
 
-def get_download_url(period: str) -> str | None:
-    url = CMS_BASE + SUBPAGE_PATTERN.format(period=period)
-    log.info("Checking sub-page for %s ...", period)
+def get_download_url(period: str):
+    url = CMS_BASE + SUBPAGE_PAT.format(period=period)
     try:
         resp = requests.get(url, headers=HEADERS, timeout=30)
         resp.raise_for_status()
-    except requests.RequestException as e:
-        log.warning("Could not fetch sub-page: %s", e)
+    except Exception as e:
+        log.warning("Could not fetch sub-page for %s: %s", period, e)
         return None
     soup = BeautifulSoup(resp.text, "html.parser")
     for a in soup.find_all("a", href=True):
@@ -84,178 +72,123 @@ def get_download_url(period: str) -> str | None:
             return href if href.startswith("http") else CMS_BASE + href
     return None
 
-
 def download_period(period: str) -> bool:
-    month_dir = DATA_DIR / period
-    if month_dir.exists() and any(month_dir.iterdir()):
+    out_dir = DATA_DIR / period
+    if out_dir.exists() and any(out_dir.rglob("*.csv")):
         log.info("[%s] Already downloaded.", period)
         return True
-
-    file_url = get_download_url(period)
-    if not file_url:
+    url = get_download_url(period)
+    if not url:
         log.warning("[%s] No download URL found.", period)
         return False
-
-    log.info("[%s] Downloading %s", period, file_url)
+    log.info("[%s] Downloading %s", period, url)
     try:
-        resp = requests.get(file_url, headers=HEADERS, timeout=120)
+        resp = requests.get(url, headers=HEADERS, timeout=120)
         resp.raise_for_status()
-    except requests.RequestException as e:
+    except Exception as e:
         log.error("[%s] Download failed: %s", period, e)
         return False
-
-    month_dir.mkdir(parents=True, exist_ok=True)
-    raw = resp.content
-
-    if file_url.lower().endswith(".zip"):
-        try:
-            with zipfile.ZipFile(BytesIO(raw)) as zf:
-                zf.extractall(month_dir)
-                log.info("[%s] Extracted %d file(s).", period, len(zf.namelist()))
-                return True
-        except zipfile.BadZipFile:
-            pass
-
-    out = month_dir / f"MA_Enrollment_SCC_{period}.csv"
-    out.write_bytes(raw)
-    log.info("[%s] Saved to %s", period, out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if url.lower().endswith(".zip"):
+        with zipfile.ZipFile(BytesIO(resp.content)) as zf:
+            zf.extractall(out_dir)
+    else:
+        (out_dir / f"enrollment_{period}.csv").write_bytes(resp.content)
+    log.info("[%s] Saved.", period)
     return True
 
 
-# ── Steps ─────────────────────────────────────────────────────────────────────
-
 def step_download():
-    period = get_current_period()
+    period = current_period()
     log.info("Target period: %s", period)
     manifest = load_manifest()
-
     if period in manifest:
-        log.info("Period %s already in manifest, nothing to do.", period)
+        log.info("Already have %s, nothing to do.", period)
         return
-
-    success = download_period(period)
-    if success:
+    if download_period(period):
         manifest.add(period)
         save_manifest(manifest)
-        log.info("Manifest updated: %s", sorted(manifest))
     else:
-        raise RuntimeError(f"Failed to download period {period}")
+        raise RuntimeError(f"Failed to download {period}")
 
 
-ROLLING_MONTHS = 24
-
-
-def prune_old_periods():
-    """Delete downloaded data older than ROLLING_MONTHS to stay under 2GB."""
-    from datetime import date
-    import shutil
-
-    if not DATA_DIR.exists():
-        return
-
-    # Get all YYYY-MM period folders
-    all_periods = sorted([
-        d.name for d in DATA_DIR.iterdir()
-        if d.is_dir() and re.match(r"^\d{4}-\d{2}$", d.name)
-    ])
-
-    cutoff_idx = len(all_periods) - ROLLING_MONTHS
-    if cutoff_idx <= 0:
-        log.info("Only %d periods found, nothing to prune.", len(all_periods))
-        return
-
-    to_delete = all_periods[:cutoff_idx]
-    for period in to_delete:
-        period_dir = DATA_DIR / period
-        shutil.rmtree(period_dir)
-        log.info("Pruned old period: %s", period)
-
-    # Update manifest
-    manifest = load_manifest()
-    manifest -= set(to_delete)
-    save_manifest(manifest)
-    log.info("Pruned %d periods, keeping latest %d.", len(to_delete), ROLLING_MONTHS)
+def read_existing_gz() -> pd.DataFrame | None:
+    if not COMBINED_GZ.exists():
+        return None
+    try:
+        with gzip.open(COMBINED_GZ, "rb") as f:
+            return pd.read_csv(f, dtype=str, encoding="latin-1")
+    except Exception as e:
+        log.warning("Could not read existing gz: %s", e)
+        return None
 
 
 def step_combine():
-    log.info("Pruning to rolling %d months...", ROLLING_MONTHS)
-    prune_old_periods()
-
-    log.info("Combining all CSVs...")
-    all_dfs = []
-    csv_files = sorted(DATA_DIR.rglob("*.csv"))
-    csv_files = [f for f in csv_files if "combined" not in f.name.lower()]
-
-    if not csv_files:
-        # No raw files downloaded — load from existing combined CSV if available
-        if COMBINED_CSV.exists():
-            log.info("No raw CSVs found, but combined CSV exists — nothing new to combine.")
-            return
-        raise RuntimeError(f"No CSV files found under {DATA_DIR} and no existing combined CSV.")
-
-    for csv_path in csv_files:
-        # Period is the YYYY-MM folder directly under DATA_DIR
+    # Load newly downloaded CSVs
+    new_dfs = []
+    for csv_path in sorted(DATA_DIR.rglob("*.csv")):
         try:
             period = csv_path.relative_to(DATA_DIR).parts[0]
         except Exception:
-            period = "unknown"
+            continue
         try:
             df = pd.read_csv(csv_path, dtype=str, encoding="latin-1")
             df.columns = [c.strip().strip('"') for c in df.columns]
             df.insert(0, "report_period", period)
             df.replace(".", "", inplace=True)
             df["Enrolled"] = pd.to_numeric(df["Enrolled"], errors="coerce")
-            all_dfs.append(df)
+            new_dfs.append(df)
             log.info("Loaded %s (%d rows)", csv_path.name, len(df))
         except Exception as e:
             log.warning("Could not read %s: %s", csv_path, e)
 
-    new_data = pd.concat(all_dfs, ignore_index=True)
-
-    # Merge with existing combined CSV if it exists
-    if COMBINED_CSV.exists():
-        log.info("Merging with existing combined CSV...")
-        existing = pd.read_csv(COMBINED_CSV, dtype=str)
-        existing["Enrolled"] = pd.to_numeric(existing["Enrolled"], errors="coerce")
-        # Remove any periods we're replacing with fresh data
-        new_periods = new_data["report_period"].unique()
-        existing = existing[~existing["report_period"].isin(new_periods)]
-        combined = pd.concat([existing, new_data], ignore_index=True)
+    # Merge with existing combined data
+    existing = read_existing_gz()
+    if new_dfs:
+        new_data   = pd.concat(new_dfs, ignore_index=True)
+        new_periods = set(new_data["report_period"].unique())
+        if existing is not None:
+            existing["Enrolled"] = pd.to_numeric(existing["Enrolled"], errors="coerce")
+            existing = existing[~existing["report_period"].isin(new_periods)]
+            combined = pd.concat([existing, new_data], ignore_index=True)
+        else:
+            combined = new_data
+    elif existing is not None:
+        log.info("No new CSVs found, using existing combined data.")
+        combined = existing
     else:
-        combined = new_data
+        raise RuntimeError("No data found anywhere.")
 
-    # Keep only the most recent ROLLING_MONTHS periods
+    # Enforce rolling 24-month window
     all_periods = sorted(combined["report_period"].unique())
-    if len(all_periods) > ROLLING_MONTHS:
-        keep_periods = all_periods[-ROLLING_MONTHS:]
-        combined = combined[combined["report_period"].isin(keep_periods)]
-        log.info("Trimmed to %d periods (%s to %s)", ROLLING_MONTHS, keep_periods[0], keep_periods[-1])
+    if len(all_periods) > ROLLING:
+        keep = all_periods[-ROLLING:]
+        combined = combined[combined["report_period"].isin(keep)]
+        log.info("Trimmed to %d periods: %s → %s", ROLLING, keep[0], keep[-1])
 
     combined = combined.sort_values("report_period")
-    combined.to_csv(COMBINED_CSV, index=False)
-    log.info("Combined CSV saved: %s (%d rows, %d periods)",
-             COMBINED_CSV, len(combined), combined["report_period"].nunique())
 
+    # Write compressed
+    with gzip.open(COMBINED_GZ, "wb") as f:
+        combined.to_csv(f, index=False)
 
-def step_upload():
-    """CSV is now committed directly to GitHub via Git LFS — no upload needed."""
-    log.info("CSV is stored in GitHub via Git LFS. No separate upload step required.")
+    log.info("Saved %s (%d rows, %d periods)",
+             COMBINED_GZ, len(combined), combined["report_period"].nunique())
 
+    # Clean up raw downloaded files to save space
+    if DATA_DIR.exists():
+        shutil.rmtree(DATA_DIR)
+        log.info("Cleaned up %s", DATA_DIR)
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--step", choices=["download", "combine", "upload"], required=True)
+    p.add_argument("--step", choices=["download", "combine"], required=True)
     args = p.parse_args()
-
     if args.step == "download":
         step_download()
-    elif args.step == "combine":
+    else:
         step_combine()
-    elif args.step == "upload":
-        step_upload()
-
 
 if __name__ == "__main__":
     main()

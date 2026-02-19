@@ -1,6 +1,6 @@
-# Large data files — stored on Google Drive instead
+# Raw downloaded files — not needed in repo
 cms_ma_enrollment_data/
-*.zip
+combined_enrollment.csv
 
 # Python
 __pycache__/
@@ -9,4 +9,3 @@ __pycache__/
 
 # Mac
 .DS_Store
-combined_enrollment.csv

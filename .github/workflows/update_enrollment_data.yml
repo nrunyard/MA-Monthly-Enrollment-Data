@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,16 +23,16 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pandas
 
-      - name: Download latest CMS enrollment file
+      - name: Download latest CMS file
         run: python update_data.py --step download
 
-      - name: Combine new data with existing CSV
+      - name: Combine into rolling 24-month gz
         run: python update_data.py --step combine
 
-      - name: Commit and push updated data
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add combined_enrollment.csv downloaded_periods.txt
+          git add combined_enrollment.csv.gz downloaded_periods.txt
           git diff --staged --quiet || git commit -m "Auto-update: $(date +'%Y-%m') enrollment data"
           git push
