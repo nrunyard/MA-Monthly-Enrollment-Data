@@ -9,3 +9,4 @@ __pycache__/
 
 # Mac
 .DS_Store
+combined_enrollment.csv
